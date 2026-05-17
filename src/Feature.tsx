@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { MeshConfig, YRoom } from "@baditaflorin/mesh-common";
+import { useTilt, type MeshConfig, type YRoom } from "@baditaflorin/mesh-common";
 
 type Props = { room: YRoom | null; config: MeshConfig };
 
@@ -17,10 +17,6 @@ type Peer = {
 };
 
 const NAME_KEY = (prefix: string) => `${prefix}:displayName`;
-
-interface DeviceOrientationEventWithPermission extends DeviceOrientationEvent {
-  requestPermission?: () => Promise<"granted" | "denied">;
-}
 
 function pickTargetHue(peerId: string): number {
   // Deterministic per-peer target so phones don't all want the same angle.
@@ -51,9 +47,10 @@ function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
     () => localStorage.getItem(NAME_KEY(config.storagePrefix)) ?? "",
   );
   const [armed, setArmed] = useState(false);
-  const [permError, setPermError] = useState<string | null>(null);
-  const [myYaw, setMyYaw] = useState(0);
-  const [myPitch, setMyPitch] = useState(0);
+  const tilt = useTilt({ armed });
+  const permError = tilt.error;
+  const myYaw = armed ? ((tilt.alpha ?? 0) + 360) % 360 : 0;
+  const myPitch = armed ? (tilt.beta ?? 0) : 0;
   const [, rerender] = useState(0);
   const lastPubRef = useRef(0);
 
@@ -88,76 +85,26 @@ function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
   }, [armed, name, room, targetHue]);
 
   useEffect(() => {
-    if (!armed) {
-      const myName = name.trim() || `peer-${room.peerId.slice(0, 4)}`;
-      room.doc.getMap<Peer>("peers").set(room.peerId, {
-        targetHue,
-        yaw: 0,
-        pitch: 0,
-        match: 0,
-        name: myName,
-        armed: false,
-      });
-      return;
-    }
-    let cancelled = false;
-
-    const onOrient = (e: DeviceOrientationEvent) => {
-      if (cancelled) return;
-      const yaw = (e.alpha ?? 0 + 360) % 360;
-      const pitch = e.beta ?? 0;
-      setMyYaw(yaw);
-      setMyPitch(pitch);
-      const now = performance.now();
-      if (now - lastPubRef.current > 200) {
-        // Match score: 1 when yaw delta and pitch are aligned; falls off with angular error.
-        const yawErr = Math.min(Math.abs(yaw - targetYaw), 360 - Math.abs(yaw - targetYaw));
-        const yawScore = Math.max(0, 1 - yawErr / 30); // tight ±30°
-        const pitchScore = Math.max(0, 1 - Math.abs(pitch) / 30); // flat target
-        const match = yawScore * pitchScore;
-        const myName = name.trim() || `peer-${room.peerId.slice(0, 4)}`;
-        room.doc.getMap<Peer>("peers").set(room.peerId, {
-          targetHue,
-          yaw: Math.round(yaw),
-          pitch: Math.round(pitch),
-          match,
-          name: myName,
-          armed: true,
-        });
-        lastPubRef.current = now;
-      }
-    };
-
-    const start = async () => {
-      const doe = (
-        typeof DeviceOrientationEvent !== "undefined"
-          ? (DeviceOrientationEvent as unknown as DeviceOrientationEventWithPermission)
-          : null
-      ) as DeviceOrientationEventWithPermission | null;
-      if (doe?.requestPermission) {
-        try {
-          const res = await doe.requestPermission();
-          if (res !== "granted") {
-            setPermError("Orientation permission denied");
-            setArmed(false);
-            return;
-          }
-        } catch (err) {
-          setPermError(`Orientation error: ${(err as Error).message}`);
-          setArmed(false);
-          return;
-        }
-      }
-      window.addEventListener("deviceorientation", onOrient, true);
-    };
-    void start();
-
-    return () => {
-      cancelled = true;
-      window.removeEventListener("deviceorientation", onOrient, true);
-    };
+    if (!armed) return;
+    const now = performance.now();
+    if (now - lastPubRef.current <= 200) return;
+    // Match score: 1 when yaw delta and pitch are aligned; falls off with angular error.
+    const yawErr = Math.min(Math.abs(myYaw - targetYaw), 360 - Math.abs(myYaw - targetYaw));
+    const yawScore = Math.max(0, 1 - yawErr / 30); // tight ±30°
+    const pitchScore = Math.max(0, 1 - Math.abs(myPitch) / 30); // flat target
+    const match = yawScore * pitchScore;
+    const myName = name.trim() || `peer-${room.peerId.slice(0, 4)}`;
+    room.doc.getMap<Peer>("peers").set(room.peerId, {
+      targetHue,
+      yaw: Math.round(myYaw),
+      pitch: Math.round(myPitch),
+      match,
+      name: myName,
+      armed: true,
+    });
+    lastPubRef.current = now;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [armed, targetHue, targetYaw]);
+  }, [armed, myYaw, myPitch, targetHue, targetYaw]);
 
   const peers: Array<{ id: string; p: Peer }> = [];
   room.doc.getMap<Peer>("peers").forEach((p, id) => peers.push({ id, p }));
