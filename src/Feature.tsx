@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { useTilt, type MeshConfig, type YRoom } from "@baditaflorin/mesh-common";
+import { useEffect, useState } from "react";
+import { useRateLimit, useTilt, type MeshConfig, type YRoom } from "@baditaflorin/mesh-common";
 
 type Props = { room: YRoom | null; config: MeshConfig };
 
@@ -52,7 +52,7 @@ function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
   const myYaw = armed ? ((tilt.alpha ?? 0) + 360) % 360 : 0;
   const myPitch = armed ? (tilt.beta ?? 0) : 0;
   const [, rerender] = useState(0);
-  const lastPubRef = useRef(0);
+  const pubLimit = useRateLimit({ max: 1, perMs: 300 });
 
   useEffect(() => {
     if (name) localStorage.setItem(NAME_KEY(config.storagePrefix), name);
@@ -86,8 +86,7 @@ function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
 
   useEffect(() => {
     if (!armed) return;
-    const now = performance.now();
-    if (now - lastPubRef.current <= 200) return;
+    if (!pubLimit.take()) return;
     // Match score: 1 when yaw delta and pitch are aligned; falls off with angular error.
     const yawErr = Math.min(Math.abs(myYaw - targetYaw), 360 - Math.abs(myYaw - targetYaw));
     const yawScore = Math.max(0, 1 - yawErr / 30); // tight ±30°
@@ -102,7 +101,6 @@ function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
       name: myName,
       armed: true,
     });
-    lastPubRef.current = now;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [armed, myYaw, myPitch, targetHue, targetYaw]);
 
