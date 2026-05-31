@@ -86,21 +86,36 @@ function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
 
   useEffect(() => {
     if (!armed) return;
-    if (!pubLimit.take()) return;
-    // Match score: 1 when yaw delta and pitch are aligned; falls off with angular error.
-    const yawErr = Math.min(Math.abs(myYaw - targetYaw), 360 - Math.abs(myYaw - targetYaw));
-    const yawScore = Math.max(0, 1 - yawErr / 30); // tight ±30°
-    const pitchScore = Math.max(0, 1 - Math.abs(myPitch) / 30); // flat target
-    const match = yawScore * pitchScore;
-    const myName = name.trim() || `peer-${room.peerId.slice(0, 4)}`;
-    room.doc.getMap<Peer>("peers").set(room.peerId, {
-      targetHue,
-      yaw: Math.round(myYaw),
-      pitch: Math.round(myPitch),
-      match,
-      name: myName,
-      armed: true,
-    });
+    const publish = () => {
+      // Match score: 1 when yaw delta and pitch are aligned; falls off with angular error.
+      const yawErr = Math.min(Math.abs(myYaw - targetYaw), 360 - Math.abs(myYaw - targetYaw));
+      const yawScore = Math.max(0, 1 - yawErr / 30); // tight ±30°
+      const pitchScore = Math.max(0, 1 - Math.abs(myPitch) / 30); // flat target
+      const match = yawScore * pitchScore;
+      const myName = name.trim() || `peer-${room.peerId.slice(0, 4)}`;
+      room.doc.getMap<Peer>("peers").set(room.peerId, {
+        targetHue,
+        yaw: Math.round(myYaw),
+        pitch: Math.round(myPitch),
+        match,
+        name: myName,
+        armed: true,
+      });
+    };
+    if (pubLimit.take()) {
+      publish();
+      return;
+    }
+    // Rate-limited: the bucket is empty, so a naive early-return would DROP this
+    // reading — and if it's the one where the user finally hit their target
+    // angle, the mesh would never learn the peer is aligned. Schedule a trailing
+    // publish so the latest orientation always reaches Y.Map("peers").
+    const wait = Math.max(0, pubLimit.msUntilNext());
+    const t = setTimeout(() => {
+      pubLimit.take();
+      publish();
+    }, wait);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [armed, myYaw, myPitch, targetHue, targetYaw]);
 
